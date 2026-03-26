@@ -9,55 +9,56 @@ export default async function handler(req, res) {
 
   try {
     const videoId = extractVideoId(url);
-    if (!videoId) throw new Error("Video ID not found in URL");
-
-    // פנייה ל-RapidAPI
     const rapidRes = await fetch(`https://${RAPID_API_HOST}/dl?id=${videoId}`, {
       method: 'GET',
-      headers: {
-        'x-rapidapi-host': RAPID_API_HOST,
-        'x-rapidapi-key': RAPID_API_KEY
-      }
+      headers: { 'x-rapidapi-host': RAPID_API_HOST, 'x-rapidapi-key': RAPID_API_KEY }
     });
 
     const data = await rapidRes.json();
+    console.log("Full API Response:", JSON.stringify(data));
 
-    // לוג לבדיקה ב-Vercel Dashboard
-    console.log("RapidAPI Response:", JSON.stringify(data));
+    if (data.status !== 'OK') throw new Error(`API Error: ${data.msg || 'Unknown'}`);
 
-    if (data.status !== 'OK') {
-      // אם ה-API מחזיר שגיאה, נציג את ההודעה המקורית שלו (למשל: "Rate limit exceeded")
-      throw new Error(`RapidAPI Error: ${data.msg || data.message || 'Unknown Error'}`);
-    }
-
-    // חילוץ הלינק (חיפוש גמיש יותר בתוך אובייקט ה-link)
+    // --- מנגנון חילוץ לינק חכם ---
     let downloadUrl = null;
-    if (data.link) {
-        // מנסה למצוא איכות 720p או 360p בפורמט MP4
-        const formats = Object.entries(data.link); // [ [key, [type, quality, url]], ... ]
-        const found = formats.find(([key, val]) => val[0] === 'mp4' && (val[1] === '720' || val[1] === '360')) || formats[0];
-        if (found) downloadUrl = found[1][2];
+
+    // 1. ניסיון לפי המבנה שראינו קודם (data.link)
+    if (data.link && typeof data.link === 'object') {
+      const formats = Object.values(data.link);
+      // מחפש mp4 באיכות 720 או 360
+      const best = formats.find(f => f[0] === 'mp4' && (f[1] === '720' || f[1] === '360')) || formats[0];
+      if (best && best[2]) downloadUrl = best[2];
+    }
+    
+    // 2. ניסיון גיבוי אם המבנה הוא data.links (ברבים)
+    if (!downloadUrl && data.links) {
+      downloadUrl = data.links.find(l => l.quality === '720p' || l.quality === '360p')?.link || data.links[0]?.link;
     }
 
-    if (!downloadUrl) throw new Error("No download link found in API response");
+    // 3. מוצא אחרון - חיפוש כל מחרוזת שמתחילה ב-http ומכילה googlevideo
+    if (!downloadUrl) {
+      const strData = JSON.stringify(data);
+      const match = strData.match(/https?:\/\/[^" ]+googlevideo[^" ]+/);
+      if (match) downloadUrl = match[0].replace(/\\/g, '');
+    }
 
-    // חיבור לדרייב
+    if (!downloadUrl) throw new Error("No download link found in the full response");
+
+    // --- העלאה לגוגל דרייב ---
     const auth = new google.auth.JWT(
       process.env.GOOGLE_CLIENT_EMAIL,
       null,
-      process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : undefined,
+      process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
       ['https://www.googleapis.com/auth/drive']
     );
     const drive = google.drive({ version: 'v3', auth });
 
     const videoStream = await fetch(downloadUrl);
-    const fileMetadata = {
-      name: `${data.title || 'Video'}.mp4`.replace(/[^\w\s]/gi, ''),
-      parents: [process.env.GOOGLE_FOLDER_ID]
-    };
-
     const file = await drive.files.create({
-      resource: fileMetadata,
+      resource: { 
+        name: `${data.title || 'Video'}.mp4`.replace(/[^\w\s\u0590-\u05FF.]/gi, ''), 
+        parents: [process.env.GOOGLE_FOLDER_ID] 
+      },
       media: { mimeType: 'video/mp4', body: videoStream.body },
       fields: 'id'
     });
