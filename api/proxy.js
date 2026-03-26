@@ -1,5 +1,4 @@
 import { google } from 'googleapis';
-import { Readable } from 'stream';
 
 export default async function handler(req, res) {
   const url = req.method === 'POST' ? req.body.url : req.query.url;
@@ -18,22 +17,21 @@ export default async function handler(req, res) {
     const data = await rapidRes.json();
     if (data.status !== 'OK') throw new Error(`API Error: ${data.msg || 'Unknown'}`);
 
-    // חילוץ הלינק (חיפוש גמיש)
     let downloadUrl = null;
     if (data.link) {
       const formats = Object.values(data.link);
-      const found = formats.find(f => f[0] === 'mp4' && (f[1] === '720' || f[1] === '360')) || formats[0];
+      // מחפש MP4 - מעדיף 360p בבדיקה הזו כדי לוודא שלא חורגים מזמן הריצה של Vercel
+      const found = formats.find(f => f[0] === 'mp4' && f[1] === '360') || 
+                    formats.find(f => f[0] === 'mp4' && f[1] === '720') || 
+                    formats[0];
       if (found) downloadUrl = found[2];
     }
-
     if (!downloadUrl) throw new Error("No download link found");
 
-    // 2. הכנת הזרם (Stream) בצורה שתואמת ל-Google Drive
+    // 2. הורדת הקובץ לזיכרון (Buffer) - הכי בטוח למניעת שגיאות Pipe
     const videoRes = await fetch(downloadUrl);
-    if (!videoRes.ok) throw new Error("Failed to fetch video file");
-    
-    // המרת ה-ReadableStream של fetch ל-Node.js Readable stream
-    const nodeStream = Readable.fromWeb(videoRes.body);
+    const arrayBuffer = await videoRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
 
     // 3. התחברות לגוגל דרייב
     const auth = new google.auth.JWT(
@@ -54,7 +52,7 @@ export default async function handler(req, res) {
       resource: fileMetadata,
       media: {
         mimeType: 'video/mp4',
-        body: nodeStream // שימוש בסטרים המומר
+        body: buffer // העלאה ישירה של ה-Buffer
       },
       fields: 'id'
     });
@@ -62,7 +60,6 @@ export default async function handler(req, res) {
     return res.status(200).json({ success: true, fileId: file.data.id });
 
   } catch (error) {
-    console.error("Error:", error.message);
     return res.status(500).json({ success: false, error: error.message });
   }
 }
