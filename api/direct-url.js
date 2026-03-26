@@ -1,9 +1,5 @@
 // api/direct-url.js
-
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execPromise = promisify(exec);
+import ytdl from 'ytdl-core';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -17,24 +13,22 @@ export default async function handler(req, res) {
   }
 
   try {
-    // פקודה עם yt-dlp
-    const command = `yt-dlp --get-url -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-warnings --quiet "${url}"`;
+    const info = await ytdl.getInfo(url);
+    
+    // בוחר את הפורמט הטוב ביותר (איכות גבוהה + mp4)
+    const format = ytdl.chooseFormat(info.formats, {
+      quality: 'highest',
+      filter: format => format.container === 'mp4'
+    });
 
-    const { stdout, stderr } = await execPromise(command);
-
-    if (stderr && stderr.includes('ERROR')) {
-      throw new Error(stderr);
-    }
-
-    const directUrl = stdout.trim();
-
-    if (!directUrl || !directUrl.startsWith('http')) {
+    if (!format || !format.url) {
       throw new Error('לא נמצא קישור ישיר');
     }
 
     return res.status(200).json({
       success: true,
-      directUrl: directUrl
+      directUrl: format.url,
+      title: info.videoDetails.title
     });
 
   } catch (error) {
