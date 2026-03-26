@@ -1,12 +1,7 @@
 {
-  "name": "mymymy",
-  "version": "1.0.0",
-  "main": "api/proxy.js",
   "dependencies": {
     "googleapis": "^144.0.0",
+    "@distube/ytdl-core": "latest",
     "axios": "^1.6.0"
-  },
-  "engines": {
-    "node": "20.x"
   }
 }
