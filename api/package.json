@@ -8,6 +8,8 @@
     "start": "next start"
   },
   "dependencies": {
+    "googleapis": "^126.0.0",
+    
     "axios": "^1.1.0",
     "ytdl-core": "^4.11.5",
     "next": "latest",
