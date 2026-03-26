@@ -5,7 +5,7 @@ export default async function handler(req, res) {
   if (!url) return res.status(400).json({ error: 'Missing URL' });
 
   try {
-    // 1. חיבור לגוגל דרייב (כמו תמיד)
+    // 1. חיבור לגוגל דרייב
     const auth = new google.auth.JWT(
       process.env.GOOGLE_CLIENT_EMAIL,
       null,
@@ -14,48 +14,52 @@ export default async function handler(req, res) {
     );
     const drive = google.drive({ version: 'v3', auth });
 
-    // 2. חילוץ ה-ID של הסרטון מהקישור
-    const videoId = url.match(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([^& \n]+)/)[1];
+    // 2. פנייה ל-Cobalt API (השירות הכי חזק לעקיפת חסימות)
+    const cobaltResponse = await fetch('https://api.cobalt.tools/api/json', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        url: url,
+        vQuality: '720', // איכות טובה שחוסכת משאבים
+        filenamePattern: 'basic'
+      })
+    });
 
-    // 3. שימוש בשרת מתווך (Invidious) כדי לקבל לינק הורדה ישיר בלי חסימת Bot
-    const invidiousInstances = [
-      'https://invidious.snopyta.org',
-      'https://yewtu.be',
-      'https://invidious.kavin.rocks',
-      'https://inv.vern.cc'
-    ];
-    
-    let directUrl = null;
-    for (let instance of invidiousInstances) {
-      try {
-        const apiRes = await fetch(`${instance}/api/v1/videos/${videoId}`);
-        const data = await apiRes.json();
-        if (data.formatStreams && data.formatStreams.length > 0) {
-          // לוקח את האיכות הכי גבוהה שזמינה (בד"כ 720p או 360p עם סאונד)
-          directUrl = data.formatStreams[data.formatStreams.length - 1].url;
-          break;
-        }
-      } catch (e) { continue; }
+    const cobaltData = await cobaltResponse.json();
+
+    // אם Cobalt מחזיר שגיאה או לא מחזיר לינק
+    if (!cobaltData || !cobaltData.url) {
+      throw new Error("YouTube detected the proxy. Try a different video or wait 5 min.");
     }
 
-    if (!directUrl) throw new Error("YouTube is being very stubborn. Try again in a few minutes.");
+    // 3. הורדת הקובץ מהלינק ש-Cobalt נתן והזרמה לדרייב
+    const videoRes = await fetch(cobaltData.url);
+    if (!videoRes.ok) throw new Error("Failed to stream video from Cobalt");
 
-    // 4. העלאה לדרייב
-    const videoRes = await fetch(directUrl);
     const fileMetadata = {
-      name: `Video_${videoId}.mp4`,
+      name: `Download_${Date.now()}.mp4`,
       parents: [process.env.GOOGLE_FOLDER_ID]
     };
 
     const file = await drive.files.create({
       resource: fileMetadata,
-      media: { mimeType: 'video/mp4', body: videoRes.body },
+      media: {
+        mimeType: 'video/mp4',
+        body: videoRes.body
+      },
       fields: 'id'
     });
 
     return res.status(200).json({ success: true, fileId: file.data.id });
 
   } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
+    console.error("Final Error:", error.message);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 }
