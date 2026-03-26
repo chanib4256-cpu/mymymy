@@ -19,7 +19,7 @@ export default function Home() {
     setTitle('');
 
     try {
-      const res = await fetch('/api/direct-url', {
+      const res = await fetch('/api/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: youtubeUrl })
