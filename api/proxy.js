@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import { Readable } from 'stream';
 
 export default async function handler(req, res) {
   const url = req.method === 'POST' ? req.body.url : req.query.url;
@@ -9,42 +10,32 @@ export default async function handler(req, res) {
 
   try {
     const videoId = extractVideoId(url);
+    
+    // 1. קבלת הלינק מ-RapidAPI
     const rapidRes = await fetch(`https://${RAPID_API_HOST}/dl?id=${videoId}`, {
-      method: 'GET',
       headers: { 'x-rapidapi-host': RAPID_API_HOST, 'x-rapidapi-key': RAPID_API_KEY }
     });
-
     const data = await rapidRes.json();
-    console.log("Full API Response:", JSON.stringify(data));
-
     if (data.status !== 'OK') throw new Error(`API Error: ${data.msg || 'Unknown'}`);
 
-    // --- מנגנון חילוץ לינק חכם ---
+    // חילוץ הלינק (חיפוש גמיש)
     let downloadUrl = null;
-
-    // 1. ניסיון לפי המבנה שראינו קודם (data.link)
-    if (data.link && typeof data.link === 'object') {
+    if (data.link) {
       const formats = Object.values(data.link);
-      // מחפש mp4 באיכות 720 או 360
-      const best = formats.find(f => f[0] === 'mp4' && (f[1] === '720' || f[1] === '360')) || formats[0];
-      if (best && best[2]) downloadUrl = best[2];
+      const found = formats.find(f => f[0] === 'mp4' && (f[1] === '720' || f[1] === '360')) || formats[0];
+      if (found) downloadUrl = found[2];
     }
+
+    if (!downloadUrl) throw new Error("No download link found");
+
+    // 2. הכנת הזרם (Stream) בצורה שתואמת ל-Google Drive
+    const videoRes = await fetch(downloadUrl);
+    if (!videoRes.ok) throw new Error("Failed to fetch video file");
     
-    // 2. ניסיון גיבוי אם המבנה הוא data.links (ברבים)
-    if (!downloadUrl && data.links) {
-      downloadUrl = data.links.find(l => l.quality === '720p' || l.quality === '360p')?.link || data.links[0]?.link;
-    }
+    // המרת ה-ReadableStream של fetch ל-Node.js Readable stream
+    const nodeStream = Readable.fromWeb(videoRes.body);
 
-    // 3. מוצא אחרון - חיפוש כל מחרוזת שמתחילה ב-http ומכילה googlevideo
-    if (!downloadUrl) {
-      const strData = JSON.stringify(data);
-      const match = strData.match(/https?:\/\/[^" ]+googlevideo[^" ]+/);
-      if (match) downloadUrl = match[0].replace(/\\/g, '');
-    }
-
-    if (!downloadUrl) throw new Error("No download link found in the full response");
-
-    // --- העלאה לגוגל דרייב ---
+    // 3. התחברות לגוגל דרייב
     const auth = new google.auth.JWT(
       process.env.GOOGLE_CLIENT_EMAIL,
       null,
@@ -53,19 +44,25 @@ export default async function handler(req, res) {
     );
     const drive = google.drive({ version: 'v3', auth });
 
-    const videoStream = await fetch(downloadUrl);
+    // 4. העלאה לדרייב
+    const fileMetadata = {
+      name: `${data.title || 'Video'}.mp4`.replace(/[^\w\s\u0590-\u05FF.]/gi, ''),
+      parents: [process.env.GOOGLE_FOLDER_ID]
+    };
+
     const file = await drive.files.create({
-      resource: { 
-        name: `${data.title || 'Video'}.mp4`.replace(/[^\w\s\u0590-\u05FF.]/gi, ''), 
-        parents: [process.env.GOOGLE_FOLDER_ID] 
+      resource: fileMetadata,
+      media: {
+        mimeType: 'video/mp4',
+        body: nodeStream // שימוש בסטרים המומר
       },
-      media: { mimeType: 'video/mp4', body: videoStream.body },
       fields: 'id'
     });
 
     return res.status(200).json({ success: true, fileId: file.data.id });
 
   } catch (error) {
+    console.error("Error:", error.message);
     return res.status(500).json({ success: false, error: error.message });
   }
 }
