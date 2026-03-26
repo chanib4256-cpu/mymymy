@@ -1,63 +1,40 @@
 import { google } from 'googleapis';
-import axios from 'axios';
 
 export default async function handler(req, res) {
   const url = req.method === 'POST' ? req.body.url : req.query.url;
-
   if (!url) return res.status(400).json({ error: 'Missing URL' });
 
   try {
-    // 1. השגת קישור ישיר
-    const directUrl = await getSmartLink(url);
-    if (!directUrl) throw new Error("Could not extract download link");
-
-    // 2. הגדרת חיבור לגוגל דרייב
-    // חשוב: לוודא שה-PRIVATE KEY בורסל כולל את הגרשיים ואת ה-\n בצורה תקינה
     const auth = new google.auth.JWT(
       process.env.GOOGLE_CLIENT_EMAIL,
       null,
-      process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : undefined,
       ['https://www.googleapis.com/auth/drive']
     );
 
     const drive = google.drive({ version: 'v3', auth });
+    
+    // שלב 1: השגת לינק ישיר (עוקף חסימות)
+    const directUrl = await getSmartLink(url);
+    if (!directUrl) throw new Error("YouTube blocked all sources");
 
-    // 3. הורדה באמצעות axios כ-Stream (יציב יותר ב-Node.js)
-    const response = await axios({
-      method: 'get',
-      url: directUrl,
-      responseType: 'stream'
-    });
-
+    // שלב 2: העלאה לדרייב
+    const videoRes = await fetch(directUrl);
     const fileMetadata = {
-      name: `YT_Video_${Date.now()}.mp4`,
-      parents: process.env.GOOGLE_FOLDER_ID ? [process.env.GOOGLE_FOLDER_ID] : []
-    };
-
-    const media = {
-      mimeType: 'video/mp4',
-      body: response.data
+      name: `Video_${Date.now()}.mp4`,
+      parents: [process.env.GOOGLE_FOLDER_ID]
     };
 
     const file = await drive.files.create({
       resource: fileMetadata,
-      media: media,
-      fields: 'id, name'
+      media: { mimeType: 'video/mp4', body: videoRes.body },
+      fields: 'id'
     });
 
-    return res.status(200).json({ 
-      success: true, 
-      fileId: file.data.id,
-      link: `https://drive.google.com/file/d/${file.data.id}/view`
-    });
+    return res.status(200).json({ success: true, fileId: file.data.id });
 
   } catch (error) {
-    console.error("Error details:", error.response?.data || error.message);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message,
-      details: "Check if Google Service Account has access to the folder"
-    });
+    return res.status(500).json({ error: error.message });
   }
 }
 
@@ -70,7 +47,5 @@ async function getSmartLink(videoUrl) {
     });
     const d = await r.json();
     return d.url || d.picker?.[0]?.url;
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
