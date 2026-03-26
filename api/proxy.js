@@ -1,10 +1,12 @@
 import { google } from 'googleapis';
+import ytdl from '@distube/ytdl-core';
 
 export default async function handler(req, res) {
   const url = req.method === 'POST' ? req.body.url : req.query.url;
   if (!url) return res.status(400).json({ error: 'Missing URL' });
 
   try {
+    // 1. התחברות לגוגל דרייב
     const auth = new google.auth.JWT(
       process.env.GOOGLE_CLIENT_EMAIL,
       null,
@@ -13,51 +15,37 @@ export default async function handler(req, res) {
     );
 
     const drive = google.drive({ version: 'v3', auth });
+
+    // 2. חילוץ לינק ישיר מיוטיוב (באיכות הכי טובה שיש וידאו+אודיו יחד)
+    const info = await ytdl.getInfo(url);
+    const format = ytdl.chooseFormat(info.formats, { quality: 'highest', filter: 'audioandvideo' });
     
-    // ניסיון להשיג לינק הורדה ממקור חלופי
-    const directUrl = await getBackupLink(url);
-    if (!directUrl) throw new Error("כל מקורות ההורדה חסומים כרגע עובדים על פתרון");
+    if (!format || !format.url) throw new Error("לא נמצא פורמט מתאים להורדה");
 
-    // העלאה לדרייב
-    const videoRes = await fetch(directUrl);
-    if (!videoRes.ok) throw new Error("Failed to fetch video stream");
-
+    // 3. הזרמה ישירות לדרייב (כדי לא לחרוג מהזיכרון של ורסל)
+    const videoStream = await fetch(format.url);
+    
     const fileMetadata = {
-      name: `Video_${Date.now()}.mp4`,
+      name: `${info.videoDetails.title.replace(/[^\w\s]/gi, '')}.mp4`,
       parents: [process.env.GOOGLE_FOLDER_ID]
     };
 
     const file = await drive.files.create({
       resource: fileMetadata,
-      media: { mimeType: 'video/mp4', body: videoRes.body },
+      media: {
+        mimeType: 'video/mp4',
+        body: videoStream.body
+      },
       fields: 'id'
     });
 
     return res.status(200).json({ success: true, fileId: file.data.id });
 
   } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
-}
-
-async function getBackupLink(videoUrl) {
-  try {
-    // שימוש ב-API חלופי של ddownr או מקור דומה
-    const response = await fetch(`https://loader.to/api/getRouting?url=${encodeURIComponent(videoUrl)}`);
-    const data = await response.json();
-    
-    // מחפש את הלינק של ה-MP4 (בדרך כלל ב-720p)
-    if (data && data.url) return data.url;
-    
-    // ניסיון נוסף עם cobalt בפורמט שונה
-    const cobaltRes = await fetch("https://api.cobalt.tools/api/json", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({ url: videoUrl, vQuality: "720", isAudioOnly: false })
+    console.error("Error details:", error.message);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message.includes('403') ? "YouTube blocked this request (403)" : error.message 
     });
-    const cobaltData = await cobaltRes.json();
-    return cobaltData.url;
-  } catch (e) {
-    return null;
   }
 }
