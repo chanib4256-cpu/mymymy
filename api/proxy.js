@@ -9,33 +9,29 @@ export default async function handler(req, res) {
 
   try {
     const videoId = extractVideoId(url);
+    
+    // 1. קבלת נתונים מ-RapidAPI
     const rapidRes = await fetch(`https://${RAPID_API_HOST}/dl?id=${videoId}`, {
       headers: { 'x-rapidapi-host': RAPID_API_HOST, 'x-rapidapi-key': RAPID_API_KEY }
     });
-
     const data = await rapidRes.json();
     
-    // --- חיפוש לינק אגרסיבי ---
-    let downloadUrl = null;
+    if (data.status !== 'OK') throw new Error(`API Error: ${data.msg || 'Unknown'}`);
+
+    // 2. חילוץ הלינק (חיפוש אגרסיבי בתוך כל ה-JSON)
     const fullJson = JSON.stringify(data);
-    
-    // מחפש כתובת URL שמתחילה ב-http ומכילה googlevideo (השרת הישיר של יוטיוב)
     const regex = /(https?:\/\/[^" ]+googlevideo[^" ]+)/g;
     const matches = fullJson.match(regex);
-    
-    if (matches && matches.length > 0) {
-      downloadUrl = matches[0].replace(/\\u0026/g, '&').replace(/\\/g, '');
-    }
+    let downloadUrl = matches ? matches[0].replace(/\\u0026/g, '&').replace(/\\/g, '') : null;
 
-    if (!downloadUrl) {
-      console.log("Full API Response for debug:", fullJson);
-      throw new Error("No download link found in API response");
-    }
+    if (!downloadUrl) throw new Error("No download link found");
 
-    // --- הורדה והעלאה ---
+    // 3. הורדת הסרטון ל-Buffer (פותר את בעיית ה-pipe)
     const videoRes = await fetch(downloadUrl);
-    const buffer = Buffer.from(await videoRes.arrayBuffer());
+    const arrayBuffer = await videoRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
 
+    // 4. התחברות לגוגל דרייב
     const auth = new google.auth.JWT(
       process.env.GOOGLE_CLIENT_EMAIL,
       null,
@@ -44,12 +40,17 @@ export default async function handler(req, res) {
     );
     const drive = google.drive({ version: 'v3', auth });
 
+    // 5. העלאה לדרייב
     const file = await drive.files.create({
       resource: { 
         name: `Video_${Date.now()}.mp4`, 
         parents: [process.env.GOOGLE_FOLDER_ID] 
       },
-      media: { mimeType: 'video/mp4', body: buffer }
+      media: {
+        mimeType: 'video/mp4',
+        body: buffer // שליחה כ-Buffer פותרת את שגיאת ה-pipe
+      },
+      fields: 'id'
     });
 
     return res.status(200).json({ success: true, fileId: file.data.id });
