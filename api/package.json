@@ -1,19 +1,12 @@
 {
-  "name": "my-downloader-proxy",
+  "name": "mymymy",
   "version": "1.0.0",
-  "main": "api/index.js",
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
-  },
+  "main": "api/proxy.js",
   "dependencies": {
-    "googleapis": "^126.0.0",
-    
-    "axios": "^1.1.0",
-    "ytdl-core": "^4.11.5",
-    "next": "latest",
-    "react": "latest",
-    "react-dom": "latest"
+    "googleapis": "^144.0.0",
+    "axios": "^1.6.0"
+  },
+  "engines": {
+    "node": "20.x"
   }
 }
