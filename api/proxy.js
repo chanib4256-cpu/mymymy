@@ -1,17 +1,18 @@
 import { google } from 'googleapis';
+import axios from 'axios';
 
 export default async function handler(req, res) {
-  // תמיכה גם ב-GET וגם ב-POST לנוחותך
   const url = req.method === 'POST' ? req.body.url : req.query.url;
 
   if (!url) return res.status(400).json({ error: 'Missing URL' });
 
   try {
-    // 1. השגת קישור ישיר להורדה (עוקף את החסימה של ytdl-core)
+    // 1. השגת קישור ישיר
     const directUrl = await getSmartLink(url);
-    if (!directUrl) throw new Error("כל מקורות ההורדה נכשלו");
+    if (!directUrl) throw new Error("Could not extract download link");
 
     // 2. הגדרת חיבור לגוגל דרייב
+    // חשוב: לוודא שה-PRIVATE KEY בורסל כולל את הגרשיים ואת ה-\n בצורה תקינה
     const auth = new google.auth.JWT(
       process.env.GOOGLE_CLIENT_EMAIL,
       null,
@@ -21,18 +22,21 @@ export default async function handler(req, res) {
 
     const drive = google.drive({ version: 'v3', auth });
 
-    // 3. הורדה מהמקור והזרמה ישירה לדרייב
-    const videoRes = await fetch(directUrl);
-    if (!videoRes.ok) throw new Error("נכשל שלב הורדת הקובץ מהמקור");
+    // 3. הורדה באמצעות axios כ-Stream (יציב יותר ב-Node.js)
+    const response = await axios({
+      method: 'get',
+      url: directUrl,
+      responseType: 'stream'
+    });
 
     const fileMetadata = {
-      name: `YT_Download_${Date.now()}.mp4`,
-      parents: [process.env.GOOGLE_FOLDER_ID]
+      name: `YT_Video_${Date.now()}.mp4`,
+      parents: process.env.GOOGLE_FOLDER_ID ? [process.env.GOOGLE_FOLDER_ID] : []
     };
 
     const media = {
       mimeType: 'video/mp4',
-      body: videoRes.body // הזרמה ישירה לחיסכון בזיכרון של ורסל
+      body: response.data
     };
 
     const file = await drive.files.create({
@@ -43,42 +47,30 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ 
       success: true, 
-      message: "הקובץ הועלה לדרייב בהצלחה!",
-      fileId: file.data.id 
+      fileId: file.data.id,
+      link: `https://drive.google.com/file/d/${file.data.id}/view`
     });
 
   } catch (error) {
-    console.error("Master Error:", error.message);
-    return res.status(500).json({ success: false, error: error.message });
+    console.error("Error details:", error.response?.data || error.message);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      details: "Check if Google Service Account has access to the folder"
+    });
   }
 }
 
-// פונקציה חכמה שמנסה כמה מקורות כדי לעקוף חסימות
 async function getSmartLink(videoUrl) {
-  const sources = [
-    // מקור 1: Cobalt (הכי חזק כרגע)
-    async () => {
-      const r = await fetch("https://co.wuk.sh/api/json", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Accept": "application/json" },
-        body: JSON.stringify({ url: videoUrl, vQuality: "720" })
-      });
-      const d = await r.json();
-      return d.url || d.picker?.[0]?.url;
-    },
-    // מקור 2: OceanSaver
-    async () => {
-      const r = await fetch("https://p.oceansaver.in/ajax/download.php?url=" + encodeURIComponent(videoUrl));
-      const d = await r.json();
-      return d.url;
-    }
-  ];
-
-  for (const source of sources) {
-    try {
-      const link = await source();
-      if (link && link.startsWith("http")) return link;
-    } catch (e) { continue; }
+  try {
+    const r = await fetch("https://co.wuk.sh/api/json", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ url: videoUrl, vQuality: "720" })
+    });
+    const d = await r.json();
+    return d.url || d.picker?.[0]?.url;
+  } catch (e) {
+    return null;
   }
-  return null;
 }
